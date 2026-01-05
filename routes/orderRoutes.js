@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+require('dotenv').config(); // Ensure env vars are loaded
 const nodemailer = require('nodemailer');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -62,7 +63,7 @@ router.post('/', protect, async (req, res) => {
         const mailOptions = {
             from: process.env.EMAIL_USER,
             to: user.email,
-            subject: 'Order Confirmation - NY Medical Webstore',
+            subject: 'Order Confirmation - N&Y Medical Equipment Store',
             html: `
                 <h1>Thank you for your order!</h1>
                 <p>Order ID: ${createdOrder._id}</p>
