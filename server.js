@@ -35,7 +35,11 @@ app.get('/', (req, res) => {
 });
 
 // Start Server
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Test API at: http://localhost:${PORT}/api/products`);
-});
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log(`Test API at: http://localhost:${PORT}/api/products`);
+    });
+}
+
+module.exports = app;
