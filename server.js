@@ -34,6 +34,25 @@ app.get('/', (req, res) => {
     res.send('API is running...');
 });
 
+app.get('/api/test-db', async (req, res) => {
+    try {
+        const state = mongoose.connection.readyState;
+        const states = {
+            0: 'disconnected',
+            1: 'connected',
+            2: 'connecting',
+            3: 'disconnecting',
+        };
+        res.json({
+            state: states[state],
+            msg: 'Connection test endpoint',
+            env_mongo_uri: process.env.MONGO_URI ? 'Exists' : 'Missing'
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Start Server
 if (require.main === module) {
     app.listen(PORT, () => {
