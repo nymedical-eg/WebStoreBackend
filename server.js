@@ -10,9 +10,28 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webstore')
-    .then(() => console.log('MongoDB Connected'))
-    .catch(err => console.log(err));
+const connectDB = async () => {
+    if (mongoose.connection.readyState >= 1) {
+        return;
+    }
+    try {
+        await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/webstore');
+        console.log('MongoDB Connected');
+    } catch (err) {
+        console.error('MongoDB Connection Error:', err);
+        throw err;
+    }
+};
+
+// Middleware to ensure DB connection
+app.use(async (req, res, next) => {
+    try {
+        await connectDB();
+        next();
+    } catch (err) {
+        res.status(500).json({ message: 'Database Connection Failed', error: err.message });
+    }
+});
 
 // Middleware
 app.use(cors());
