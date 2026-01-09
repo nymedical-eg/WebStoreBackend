@@ -81,19 +81,27 @@ router.put('/:productId', protect, async (req, res) => {
         if (cartItemIndex > -1) {
             const product = await Product.findById(productId);
             
-            if (quantity > product.stock) {
-                 return res.status(400).json({ message: `Not enough stock. Available: ${product.stock}` });
+            // req.body.quantity is now the delta (change amount)
+            const changeAmount = parseInt(quantity);
+            const currentQuantity = user.cart[cartItemIndex].quantity;
+            const newQuantity = currentQuantity + changeAmount;
+
+            // Check if quantity goes below 1
+            if (newQuantity < 1) {
+                return res.status(400).json({ message: "Quantity can't go lower than one" });
             }
 
-             if (quantity > 0) {
-                user.cart[cartItemIndex].quantity = quantity;
-             } else {
-                 // Remove if quantity is 0 or less
-                 user.cart.splice(cartItemIndex, 1);
-             }
-             await user.save();
-             const updatedUser = await User.findById(req.user._id).populate('cart.product');
-             res.json(updatedUser.cart);
+            // Check if quantity exceeds stock
+            if (newQuantity > product.stock) {
+                 return res.status(400).json({ message: "Quantity can't go above available stock" });
+            }
+
+            // Update quantity
+            user.cart[cartItemIndex].quantity = newQuantity;
+
+            await user.save();
+            const updatedUser = await User.findById(req.user._id).populate('cart.product');
+            res.json(updatedUser.cart);
         } else {
             res.status(404).json({ message: 'Item not found in cart' });
         }
