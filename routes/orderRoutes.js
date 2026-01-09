@@ -170,6 +170,15 @@ router.get('/all', isAdmin, async (req, res) => {
 router.put('/:id', isAdmin, async (req, res) => {
     const { status } = req.body;
 
+    // Strict validation: Ensure only status is being updated
+    const updates = Object.keys(req.body);
+    const allowedUpdates = ['status'];
+    const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
+
+    if (!isValidOperation) {
+        return res.status(400).json({ message: 'Only status updates are allowed' });
+    }
+
     try {
         const order = await Order.findById(req.params.id);
 
