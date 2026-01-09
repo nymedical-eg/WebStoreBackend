@@ -35,6 +35,17 @@ router.post('/', protect, async (req, res) => {
             price: item.product.price
         }));
 
+        // Validate stock for all items before creating order
+        for (const item of orderItems) {
+            const product = await Product.findById(item.product);
+            if (!product) {
+                return res.status(404).json({ message: `Product not found: ${item.product}` });
+            }
+            if (product.stock < item.quantity) {
+                return res.status(400).json({ message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` });
+            }
+        }
+
         const totalAmount = orderItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
 
         const order = new Order({
