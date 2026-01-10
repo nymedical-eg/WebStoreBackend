@@ -145,7 +145,9 @@ router.post('/', protect, async (req, res) => {
 // @access  Private
 router.get('/', protect, async (req, res) => {
     try {
-        const orders = await Order.find({ user: req.user._id }).sort({ createdAt: -1 });
+        const orders = await Order.find({ user: req.user._id })
+            .populate('products.product', 'name price image')
+            .sort({ createdAt: -1 });
         res.json(orders);
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -157,7 +159,10 @@ router.get('/', protect, async (req, res) => {
 // @access  Private/Admin
 router.get('/all', isAdmin, async (req, res) => {
     try {
-        const orders = await Order.find().populate('user', 'id firstName lastName email').sort({ createdAt: -1 });
+        const orders = await Order.find()
+            .populate('user', 'id firstName lastName email')
+            .populate('products.product', 'name price image')
+            .sort({ createdAt: -1 });
         res.json(orders);
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
