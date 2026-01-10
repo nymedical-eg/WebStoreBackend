@@ -93,19 +93,22 @@ router.get('/me', protect, async (req, res) => {
 // @route   PUT /api/auth/profile
 // @access  Private
 router.put('/profile', protect, async (req, res) => {
+    // Strict validation: Ensure only allowed fields are being updated
+    const updates = Object.keys(req.body);
+    const allowedUpdates = ['firstName', 'lastName', 'phone'];
+    const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
+
+    if (!isValidOperation) {
+        return res.status(400).json({ message: 'Only firstName, lastName, and phone updates are allowed' });
+    }
+
     try {
         const user = await User.findById(req.user._id);
 
         if (user) {
             user.firstName = req.body.firstName || user.firstName;
             user.lastName = req.body.lastName || user.lastName;
-            user.email = req.body.email || user.email;
             user.phone = req.body.phone || user.phone;
-
-            if (req.body.password) {
-                const salt = await bcrypt.genSalt(10);
-                user.password = await bcrypt.hash(req.body.password, salt);
-            }
 
             const updatedUser = await user.save();
 
