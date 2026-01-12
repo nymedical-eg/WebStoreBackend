@@ -3,6 +3,18 @@ const router = express.Router();
 const Product = require('../models/Product');
 const { isAdmin } = require('../middleware/auth');
 
+// GET /api/products/random - Get 3 random products (Public)
+router.get('/random', async (req, res) => {
+    try {
+        const products = await Product.aggregate([
+            { $sample: { size: 3 } }
+        ]);
+        res.json(products);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
 // GET /api/products - Get all products (Public)
 router.get('/', async (req, res) => {
     try {
