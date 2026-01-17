@@ -5,6 +5,7 @@ const nodemailer = require('nodemailer');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
+const Coupon = require('../models/Coupon');
 const { protect } = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/auth');
 
@@ -48,10 +49,52 @@ router.post('/', protect, async (req, res) => {
 
         const totalAmount = orderItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
 
+        // --- COUPON LOGIC START ---
+        let finalAmount = totalAmount;
+        let couponAppliedData = null;
+
+        if (user.cartCoupon) {
+            const coupon = await Coupon.findOne({ code: user.cartCoupon });
+            
+            if (coupon && coupon.isActive) {
+                 if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+                     // Check if usage limit exceeded
+                     // User requested specific error message: "coupon has been used up"
+                     return res.status(400).json({ message: 'coupon has been used up' });
+                 } else {
+                     let discountAmount = 0;
+                     orderItems.forEach(item => {
+                         if (coupon.applicableProducts.length === 0 || 
+                             coupon.applicableProducts.map(p => p.toString()).includes(item.product.toString())) {
+                             const itemTotal = item.price * item.quantity;
+                             const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
+                             discountAmount += itemDiscount;
+                         }
+                     });
+
+                     // Cap discount if maxDiscountValue is set
+                     if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
+                         discountAmount = coupon.maxDiscountValue;
+                     }
+
+                     finalAmount = Math.max(0, totalAmount - discountAmount);
+                     couponAppliedData = {
+                         code: coupon.code,
+                         discountAmount: Number(discountAmount.toFixed(2))
+                     };
+
+                     coupon.usedCount += 1;
+                     await coupon.save();
+                 }
+            }
+        }
+        // --- COUPON LOGIC END ---
+
         const order = new Order({
             user: req.user._id,
             products: orderItems,
-            totalAmount
+            totalAmount: Number(finalAmount.toFixed(2)),
+            couponApplied: couponAppliedData
         });
 
         const createdOrder = await order.save();
@@ -75,6 +118,7 @@ router.post('/', protect, async (req, res) => {
         // Add order to user history and clear cart
         user.orders.push(createdOrder._id);
         user.cart = [];
+        user.cartCoupon = null;
         await user.save();
 
         // Send User Email Confirmation

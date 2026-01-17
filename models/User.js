@@ -39,6 +39,10 @@ const userSchema = new mongoose.Schema({
             }
         }
     ],
+    cartCoupon: {
+        type: String,
+        default: null
+    },
     orders: [
         {
             type: mongoose.Schema.Types.ObjectId,

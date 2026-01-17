@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const Product = require('../models/Product');
+const Coupon = require('../models/Coupon');
 const { protect } = require('../middleware/authMiddleware');
 
 // @desc    Get user cart
@@ -11,14 +12,64 @@ router.get('/', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user._id).populate('cart.product');
         
-        // Calculate total
-        const total = user.cart.reduce((acc, item) => {
-            return acc + (item.product ? item.product.price * item.quantity : 0);
-        }, 0);
+        let subtotal = 0;
+        const cartItems = user.cart.map(item => {
+            if (item.product) {
+                const itemTotal = item.product.price * item.quantity;
+                subtotal += itemTotal;
+                return item;
+            }
+            return null; // Should ideally filter these out
+        }).filter(Boolean);
+
+        let discountAmount = 0;
+        let couponDetails = null;
+
+        if (user.cartCoupon) {
+            const coupon = await Coupon.findOne({ code: user.cartCoupon });
+            if (coupon && coupon.isActive) {
+                // Validate usage limit if it exists
+                if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+                    // Coupon expired/limit reached - Remove it
+                    user.cartCoupon = null;
+                    await user.save();
+                } else {
+                    couponDetails = {
+                        code: coupon.code,
+                        discountPercentage: coupon.discountPercentage
+                    };
+
+                    cartItems.forEach(item => {
+                        // Check if coupon applies to this product
+                        if (coupon.applicableProducts.length === 0 || 
+                            coupon.applicableProducts.map(p => p.toString()).includes(item.product._id.toString())) {
+                            
+                            const itemTotal = item.product.price * item.quantity;
+                            const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
+                            discountAmount += itemDiscount;
+                        }
+                    });
+
+                    // Cap discount if maxDiscountValue is set
+                    if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
+                        discountAmount = coupon.maxDiscountValue;
+                    }
+                }
+            } else {
+                 // Invalid/Inactive coupon - Remove it
+                 user.cartCoupon = null;
+                 await user.save();
+            }
+        }
+
+        const total = Math.max(0, subtotal - discountAmount);
 
         res.json({ 
             cart: user.cart, 
-            total: Number(total.toFixed(2)) 
+            subtotal: Number(subtotal.toFixed(2)),
+            discountAmount: Number(discountAmount.toFixed(2)),
+            total: Number(total.toFixed(2)),
+            coupon: couponDetails
         });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -144,6 +195,52 @@ router.delete('/', protect, async (req, res) => {
         user.cart = [];
         await user.save();
         res.json({ message: 'Cart cleared' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @desc    Apply coupon to cart
+// @route   POST /api/cart/apply-coupon
+// @access  Private
+router.post('/apply-coupon', protect, async (req, res) => {
+    const { code } = req.body;
+
+    try {
+        const coupon = await Coupon.findOne({ code });
+
+        if (!coupon) {
+            return res.status(404).json({ message: 'Coupon not found' });
+        }
+
+        if (!coupon.isActive) {
+            return res.status(400).json({ message: 'Coupon is not active' });
+        }
+
+        if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+            return res.status(400).json({ message: 'Coupon usage limit reached' });
+        }
+
+        const user = await User.findById(req.user._id);
+        user.cartCoupon = code;
+        await user.save();
+
+        res.json({ message: 'Coupon applied successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @desc    Remove coupon from cart
+// @route   POST /api/cart/remove-coupon
+// @access  Private
+router.post('/remove-coupon', protect, async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+        user.cartCoupon = null;
+        await user.save();
+
+        res.json({ message: 'Coupon removed successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
