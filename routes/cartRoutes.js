@@ -327,4 +327,129 @@ router.post('/remove-coupon', protect, async (req, res) => {
     }
 });
 
+// @desc    Calculate cart totals (Public/Guest)
+// @route   POST /api/cart/calculate
+// @access  Public
+router.post('/calculate', async (req, res) => {
+    const { items, couponCode } = req.body;
+
+    if (!items || !Array.isArray(items)) {
+        return res.status(400).json({ message: 'Items array is required' });
+    }
+
+    try {
+        let subtotal = 0;
+        const calculatedItems = [];
+
+        // 1. Calculate Subtotal & Validate Stock
+        for (const item of items) {
+            if (item.productId) {
+                const product = await Product.findById(item.productId);
+                if (!product) {
+                    return res.status(404).json({ message: `Product not found: ${item.productId}` });
+                }
+                if (item.quantity > product.stock) {
+                    return res.status(400).json({ 
+                        message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` 
+                    });
+                }
+                const itemTotal = product.price * item.quantity;
+                subtotal += itemTotal;
+                calculatedItems.push({
+                    product: product,
+                    quantity: item.quantity,
+                    price: product.price,
+                    type: 'product'
+                });
+            } else if (item.packageId) {
+                const pkg = await Package.findById(item.packageId);
+                if (!pkg) {
+                    return res.status(404).json({ message: `Package not found: ${item.packageId}` });
+                }
+                if (item.quantity > pkg.stock) {
+                    return res.status(400).json({ 
+                        message: `Not enough stock for package: ${pkg.name}. Available: ${pkg.stock}` 
+                    });
+                }
+                const itemTotal = pkg.price * item.quantity;
+                subtotal += itemTotal;
+                calculatedItems.push({
+                    package: pkg,
+                    quantity: item.quantity,
+                    price: pkg.price,
+                    type: 'package'
+                });
+            }
+        }
+
+        // 2. Apply Coupon
+        let discountAmount = 0;
+        let couponDetails = null;
+
+        if (couponCode) {
+            const coupon = await Coupon.findOne({ code: couponCode });
+            
+            if (coupon && coupon.isActive) {
+                 if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+                     // Limit reached
+                     // For calculation check, we might just return 0 discount or error. 
+                     // Let's return error to match logged-in behavior.
+                     return res.status(400).json({ message: 'coupon has been used up' });
+                 }
+
+                 // Calculate potential discount
+                 calculatedItems.forEach(item => {
+                     let applies = false;
+                     if (item.type === 'product') {
+                         if (coupon.applicableProducts.length === 0 || 
+                             coupon.applicableProducts.map(p => p.toString()).includes(item.product._id.toString())) {
+                             applies = true;
+                         }
+                     } else if (item.type === 'package') {
+                          if (coupon.applicablePackages.length === 0 || 
+                             coupon.applicablePackages.map(p => p.toString()).includes(item.package._id.toString())) {
+                             applies = true;
+                         }
+                     }
+
+                     if (applies) {
+                         const itemTotal = item.price * item.quantity;
+                         const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
+                         discountAmount += itemDiscount;
+                     }
+                 });
+
+                 // Verify Applicability (Same logic as authenticated)
+                 if (discountAmount === 0 && (coupon.applicableProducts.length > 0 || coupon.applicablePackages.length > 0)) {
+                      return res.status(400).json({ message: 'Coupon not applicable to items in cart' });
+                 }
+
+                 if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
+                     discountAmount = coupon.maxDiscountValue;
+                 }
+
+                 couponDetails = {
+                     code: coupon.code,
+                     discountPercentage: coupon.discountPercentage,
+                     discountAmount: Number(discountAmount.toFixed(2))
+                 };
+            } else {
+                 return res.status(400).json({ message: 'Invalid or inactive coupon' });
+            }
+        }
+
+        const total = Math.max(0, subtotal - discountAmount);
+
+        res.json({
+            subtotal: Number(subtotal.toFixed(2)),
+            discountAmount: Number(discountAmount.toFixed(2)),
+            total: Number(total.toFixed(2)),
+            coupon: couponDetails
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
 module.exports = router;

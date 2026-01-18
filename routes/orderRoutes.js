@@ -7,7 +7,7 @@ const Product = require('../models/Product');
 const Package = require('../models/Package');
 const User = require('../models/User');
 const Coupon = require('../models/Coupon');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, protectOptional } = require('../middleware/authMiddleware');
 const { isAdmin } = require('../middleware/auth');
 
 // Setup Nodemailer transporter
@@ -26,62 +26,111 @@ const transporter = nodemailer.createTransport({
 // @desc    Create new order
 // @route   POST /api/orders
 // @access  Private
-router.post('/', protect, async (req, res) => {
+// @desc    Create new order
+// @route   POST /api/orders
+// @access  Public (Guest) or Private (User)
+router.post('/', protectOptional, async (req, res) => {
     try {
-        const user = await User.findById(req.user._id)
-            .populate('cart.product')
-            .populate('cart.package');
+        const { guestInfo, items, couponCode } = req.body;
+        let orderItems = [];
+        let user = null;
+        let customerEmail = '';
+        let customerName = '';
+        let customerPhone = '';
+        let customerAddress = '';
+        let usedCouponCode = null;
 
-        if (!user.cart || user.cart.length === 0) {
-            return res.status(400).json({ message: 'No items in cart' });
+        if (req.user) {
+            // --- AUTHENTICATED USER FLOW ---
+            user = await User.findById(req.user._id).populate('cart.product').populate('cart.package');
+            if (!user.cart || user.cart.length === 0) {
+                return res.status(400).json({ message: 'No items in cart' });
+            }
+
+            orderItems = user.cart.map(item => {
+                if (item.product) {
+                    return {
+                        product: item.product._id,
+                        quantity: item.quantity,
+                        price: item.product.price,
+                        name: item.product.name,
+                        type: 'product'
+                    };
+                } else if (item.package) {
+                    return {
+                        package: item.package._id,
+                        quantity: item.quantity,
+                        price: item.package.price,
+                        name: item.package.name,
+                        type: 'package'
+                    };
+                }
+                return null;
+            }).filter(Boolean);
+
+            customerEmail = user.email;
+            customerName = `${user.firstName} ${user.lastName}`;
+            customerPhone = user.phone;
+            customerAddress = `${user.address}, ${user.city}, ${user.governorate}`;
+            usedCouponCode = user.cartCoupon;
+
+        } else {
+            // --- GUEST FLOW ---
+            if (!guestInfo || !items || items.length === 0) {
+                return res.status(400).json({ message: 'Guest order requires guestInfo and items' });
+            }
+
+            // Trust no one: Fetch prices from DB based on IDs sent
+            for (const item of items) {
+                if (item.productId) {
+                    const product = await Product.findById(item.productId);
+                    if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+                    orderItems.push({
+                        product: product._id,
+                        quantity: item.quantity,
+                        price: product.price, // Security: Use DB price
+                        name: product.name,
+                        type: 'product'
+                    });
+                } else if (item.packageId) {
+                    const pkg = await Package.findById(item.packageId);
+                    if (!pkg) return res.status(404).json({ message: `Package not found: ${item.packageId}` });
+                    orderItems.push({
+                        package: pkg._id,
+                        quantity: item.quantity,
+                        price: pkg.price, // Security: Use DB price
+                        name: pkg.name,
+                        type: 'package'
+                    });
+                }
+            }
+
+            customerEmail = guestInfo.email;
+            customerName = `${guestInfo.firstName} ${guestInfo.lastName}`;
+            customerPhone = guestInfo.phone;
+            customerAddress = `${guestInfo.address}, ${guestInfo.city}, ${guestInfo.governorate}`;
+            usedCouponCode = couponCode; // From Request Body
         }
 
-        const orderItems = user.cart.map(item => {
-            if (item.product) {
-                return {
-                    product: item.product._id,
-                    quantity: item.quantity,
-                    price: item.product.price,
-                    name: item.product.name, // Helper for emails
-                    type: 'product'
-                };
-            } else if (item.package) {
-                return {
-                    package: item.package._id,
-                    quantity: item.quantity,
-                    price: item.package.price,
-                    name: item.package.name, // Helper for emails
-                    type: 'package'
-                };
-            }
-            return null;
-        }).filter(Boolean);
+        // --- COMMON LOGIC (Stock, Total, Coupon, Save, Email) ---
 
         // Validate stock for all items
         for (const item of orderItems) {
             if (item.type === 'product') {
                 const product = await Product.findById(item.product);
-                if (!product) return res.status(404).json({ message: `Product not found: ${item.product}` });
                 if (product.stock < item.quantity) {
                     return res.status(400).json({ message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` });
                 }
             } else if (item.type === 'package') {
                 const pkg = await Package.findById(item.package).populate('includedProducts');
-                if (!pkg) return res.status(404).json({ message: `Package not found: ${item.package}` });
-                
-                // Check Package Stock
                 if (pkg.stock < item.quantity) {
                     return res.status(400).json({ message: `Not enough stock for package: ${pkg.name}. Available: ${pkg.stock}` });
                 }
-
                 // Check Component Stock
                 for (const prod of pkg.includedProducts) {
-                    // Total demand for this product from this package line item
-                    const demand = item.quantity; // Assuming 1 pkg contains 1 of each included product. 
-                    // If includedProducts can have quantities per product (unlikely based on array of IDs), this is fine.
-                    // But we should verify current stock of component product.
                     const currentProd = await Product.findById(prod._id);
-                    if (currentProd.stock < demand) {
+                    // Assuming 1:1 ratio for package components
+                    if (currentProd.stock < item.quantity) {
                          return res.status(400).json({ message: `Not enough stock for included product: ${currentProd.name} (in package ${pkg.name}). Available: ${currentProd.stock}` });
                     }
                 }
@@ -89,13 +138,12 @@ router.post('/', protect, async (req, res) => {
         }
 
         const totalAmount = orderItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-
-        // --- COUPON LOGIC START ---
         let finalAmount = totalAmount;
         let couponAppliedData = null;
 
-        if (user.cartCoupon) {
-            const coupon = await Coupon.findOne({ code: user.cartCoupon });
+        // Apply Coupon
+        if (usedCouponCode) {
+            const coupon = await Coupon.findOne({ code: usedCouponCode });
             
             if (coupon && coupon.isActive) {
                  if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
@@ -138,10 +186,10 @@ router.post('/', protect, async (req, res) => {
                  }
             }
         }
-        // --- COUPON LOGIC END ---
 
         const order = new Order({
-            user: req.user._id,
+            user: user ? user._id : null, 
+            guestInfo: user ? undefined : guestInfo,
             products: orderItems.map(item => {
                 if(item.type === 'product') return { product: item.product, quantity: item.quantity, price: item.price };
                 return { package: item.package, quantity: item.quantity, price: item.price };
@@ -163,11 +211,8 @@ router.post('/', protect, async (req, res) => {
             } else if (item.type === 'package') {
                 const pkg = await Package.findById(item.package).populate('includedProducts');
                 if (pkg) {
-                    // Deduct Package Stock
                     pkg.stock -= item.quantity;
                     await pkg.save();
-
-                    // Deduct Included Products Stock
                     for (const prod of pkg.includedProducts) {
                          const currentProd = await Product.findById(prod._id);
                          if (currentProd) {
@@ -179,7 +224,15 @@ router.post('/', protect, async (req, res) => {
             }
         }
 
-        // Prepare Email Items (Async to avoid blocking? No, wait for data prep)
+        // Clear User Cart (Only if User)
+        if (user) {
+            user.orders.push(createdOrder._id);
+            user.cart = [];
+            user.cartCoupon = null;
+            await user.save();
+        }
+
+        // Send User/Guest Email
         const emailItemsWithDetails = [];
         for (const item of orderItems) {
             if (item.type === 'product') {
@@ -190,28 +243,20 @@ router.post('/', protect, async (req, res) => {
                     details: ''
                 });
             } else if (item.type === 'package') {
-                // Fetch contents for Admin Email
                 const pkg = await Package.findById(item.package).populate('includedProducts');
                 const contentNames = pkg ? pkg.includedProducts.map(p => p.name).join(', ') : 'Unknown';
                 emailItemsWithDetails.push({
                     name: item.name,
                     quantity: item.quantity,
                     price: item.price,
-                    details: contentNames // For Admin
+                    details: contentNames
                 });
             }
         }
 
-        // Clear cart
-        user.orders.push(createdOrder._id);
-        user.cart = [];
-        user.cartCoupon = null;
-        await user.save();
-
-        // Send User Email (Package Name Only)
         const userMailOptions = {
             from: process.env.EMAIL_USER,
-            to: user.email,
+            to: customerEmail,
             subject: 'Order Confirmation - N&Y Medical Equipment Store',
             html: `
                 <h1>Thank you for your order!</h1>
@@ -226,11 +271,10 @@ router.post('/', protect, async (req, res) => {
             `
         };
 
-        // Send Admin Email (Package Name + Contents)
         const adminMailOptions = {
             from: process.env.EMAIL_USER,
             to: process.env.EMAIL_USER,
-            subject: 'New Order!',
+            subject: 'New Order Received!',
             html: `
                 <h1>New Order Received!</h1>
                 <h2>Order Details</h2>
@@ -240,11 +284,11 @@ router.post('/', protect, async (req, res) => {
                 <p><strong>Coupon Used:</strong> ${couponAppliedData ? couponAppliedData.code : 'None'}</p>
                 
                 <h2>Customer Details</h2>
-                <p><strong>User ID:</strong> ${user._id}</p>
-                <p><strong>Name:</strong> ${user.firstName} ${user.lastName}</p>
-                <p><strong>Email:</strong> ${user.email}</p>
-                <p><strong>Phone:</strong> ${user.phone}</p>
-                <p><strong>Address:</strong> ${user.address}, ${user.city}, ${user.governorate}</p>
+                <p><strong>Type:</strong> ${user ? 'Registered User' : 'Guest'}</p>
+                <p><strong>Name:</strong> ${customerName}</p>
+                <p><strong>Email:</strong> ${customerEmail}</p>
+                <p><strong>Phone:</strong> ${customerPhone}</p>
+                <p><strong>Address:</strong> ${customerAddress}</p>
 
                 <h2>Order Items</h2>
                 <ul>
@@ -260,12 +304,10 @@ router.post('/', protect, async (req, res) => {
             `
         };
 
-        // Attempt to send emails
         try {
              if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
                 await transporter.sendMail(userMailOptions);
-                console.log('Order confirmation email sent to user');
-                
+                console.log('Order confirmation email sent to user/guest');
                 await transporter.sendMail(adminMailOptions);
                 console.log('Order notification email sent to admin');
              } else {

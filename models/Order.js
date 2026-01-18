@@ -3,8 +3,17 @@ const mongoose = require('mongoose');
 const orderSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
+        ref: 'User'
+        // required: true  <-- Removed to allow Guest Orders
+    },
+    guestInfo: {
+        firstName: String,
+        lastName: String,
+        email: String,
+        phone: String,
+        governorate: String,
+        city: String,
+        address: String
     },
     products: [
         {
