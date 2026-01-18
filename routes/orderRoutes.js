@@ -4,6 +4,7 @@ require('dotenv').config(); // Ensure env vars are loaded
 const nodemailer = require('nodemailer');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
+const Package = require('../models/Package');
 const User = require('../models/User');
 const Coupon = require('../models/Coupon');
 const { protect } = require('../middleware/authMiddleware');
@@ -22,28 +23,68 @@ const transporter = nodemailer.createTransport({
 // @desc    Create new order
 // @route   POST /api/orders
 // @access  Private
+// @desc    Create new order
+// @route   POST /api/orders
+// @access  Private
 router.post('/', protect, async (req, res) => {
     try {
-        const user = await User.findById(req.user._id).populate('cart.product');
+        const user = await User.findById(req.user._id)
+            .populate('cart.product')
+            .populate('cart.package');
 
         if (!user.cart || user.cart.length === 0) {
             return res.status(400).json({ message: 'No items in cart' });
         }
 
-        const orderItems = user.cart.map(item => ({
-            product: item.product._id,
-            quantity: item.quantity,
-            price: item.product.price
-        }));
-
-        // Validate stock for all items before creating order
-        for (const item of orderItems) {
-            const product = await Product.findById(item.product);
-            if (!product) {
-                return res.status(404).json({ message: `Product not found: ${item.product}` });
+        const orderItems = user.cart.map(item => {
+            if (item.product) {
+                return {
+                    product: item.product._id,
+                    quantity: item.quantity,
+                    price: item.product.price,
+                    name: item.product.name, // Helper for emails
+                    type: 'product'
+                };
+            } else if (item.package) {
+                return {
+                    package: item.package._id,
+                    quantity: item.quantity,
+                    price: item.package.price,
+                    name: item.package.name, // Helper for emails
+                    type: 'package'
+                };
             }
-            if (product.stock < item.quantity) {
-                return res.status(400).json({ message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` });
+            return null;
+        }).filter(Boolean);
+
+        // Validate stock for all items
+        for (const item of orderItems) {
+            if (item.type === 'product') {
+                const product = await Product.findById(item.product);
+                if (!product) return res.status(404).json({ message: `Product not found: ${item.product}` });
+                if (product.stock < item.quantity) {
+                    return res.status(400).json({ message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` });
+                }
+            } else if (item.type === 'package') {
+                const pkg = await Package.findById(item.package).populate('includedProducts');
+                if (!pkg) return res.status(404).json({ message: `Package not found: ${item.package}` });
+                
+                // Check Package Stock
+                if (pkg.stock < item.quantity) {
+                    return res.status(400).json({ message: `Not enough stock for package: ${pkg.name}. Available: ${pkg.stock}` });
+                }
+
+                // Check Component Stock
+                for (const prod of pkg.includedProducts) {
+                    // Total demand for this product from this package line item
+                    const demand = item.quantity; // Assuming 1 pkg contains 1 of each included product. 
+                    // If includedProducts can have quantities per product (unlikely based on array of IDs), this is fine.
+                    // But we should verify current stock of component product.
+                    const currentProd = await Product.findById(prod._id);
+                    if (currentProd.stock < demand) {
+                         return res.status(400).json({ message: `Not enough stock for included product: ${currentProd.name} (in package ${pkg.name}). Available: ${currentProd.stock}` });
+                    }
+                }
             }
         }
 
@@ -58,21 +99,30 @@ router.post('/', protect, async (req, res) => {
             
             if (coupon && coupon.isActive) {
                  if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
-                     // Check if usage limit exceeded
-                     // User requested specific error message: "coupon has been used up"
                      return res.status(400).json({ message: 'coupon has been used up' });
                  } else {
                      let discountAmount = 0;
                      orderItems.forEach(item => {
-                         if (coupon.applicableProducts.length === 0 || 
-                             coupon.applicableProducts.map(p => p.toString()).includes(item.product.toString())) {
+                         let applies = false;
+                         if (item.type === 'product') {
+                             if (coupon.applicableProducts.length === 0 || 
+                                 coupon.applicableProducts.map(p => p.toString()).includes(item.product.toString())) {
+                                 applies = true;
+                             }
+                         } else if (item.type === 'package') {
+                              if (coupon.applicablePackages.length === 0 || 
+                                 coupon.applicablePackages.map(p => p.toString()).includes(item.package.toString())) {
+                                 applies = true;
+                             }
+                         }
+
+                         if (applies) {
                              const itemTotal = item.price * item.quantity;
                              const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
                              discountAmount += itemDiscount;
                          }
                      });
 
-                     // Cap discount if maxDiscountValue is set
                      if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
                          discountAmount = coupon.maxDiscountValue;
                      }
@@ -92,36 +142,73 @@ router.post('/', protect, async (req, res) => {
 
         const order = new Order({
             user: req.user._id,
-            products: orderItems,
+            products: orderItems.map(item => {
+                if(item.type === 'product') return { product: item.product, quantity: item.quantity, price: item.price };
+                return { package: item.package, quantity: item.quantity, price: item.price };
+            }),
             totalAmount: Number(finalAmount.toFixed(2)),
             couponApplied: couponAppliedData
         });
 
         const createdOrder = await order.save();
 
-        // Reduce stock for each product
+        // Stock Deduction
         for (const item of orderItems) {
-            const product = await Product.findById(item.product);
-            if (product) {
-                product.stock -= item.quantity;
-                await product.save();
+            if (item.type === 'product') {
+                const product = await Product.findById(item.product);
+                if (product) {
+                    product.stock -= item.quantity;
+                    await product.save();
+                }
+            } else if (item.type === 'package') {
+                const pkg = await Package.findById(item.package).populate('includedProducts');
+                if (pkg) {
+                    // Deduct Package Stock
+                    pkg.stock -= item.quantity;
+                    await pkg.save();
+
+                    // Deduct Included Products Stock
+                    for (const prod of pkg.includedProducts) {
+                         const currentProd = await Product.findById(prod._id);
+                         if (currentProd) {
+                             currentProd.stock -= item.quantity;
+                             await currentProd.save();
+                         }
+                    }
+                }
             }
         }
 
-        // Keep a copy of cart items for the email before clearing
-        const cartItemsForEmail = user.cart.map(item => ({
-            name: item.product.name,
-            quantity: item.quantity,
-            price: item.product.price
-        }));
+        // Prepare Email Items (Async to avoid blocking? No, wait for data prep)
+        const emailItemsWithDetails = [];
+        for (const item of orderItems) {
+            if (item.type === 'product') {
+                emailItemsWithDetails.push({
+                    name: item.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    details: ''
+                });
+            } else if (item.type === 'package') {
+                // Fetch contents for Admin Email
+                const pkg = await Package.findById(item.package).populate('includedProducts');
+                const contentNames = pkg ? pkg.includedProducts.map(p => p.name).join(', ') : 'Unknown';
+                emailItemsWithDetails.push({
+                    name: item.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    details: contentNames // For Admin
+                });
+            }
+        }
 
-        // Add order to user history and clear cart
+        // Clear cart
         user.orders.push(createdOrder._id);
         user.cart = [];
         user.cartCoupon = null;
         await user.save();
 
-        // Send User Email Confirmation
+        // Send User Email (Package Name Only)
         const userMailOptions = {
             from: process.env.EMAIL_USER,
             to: user.email,
@@ -133,16 +220,16 @@ router.post('/', protect, async (req, res) => {
                 ${couponAppliedData ? `<p>(Includes discount from coupon: ${couponAppliedData.code})</p>` : ''}
                 <h3>Items:</h3>
                 <ul>
-                    ${cartItemsForEmail.map(item => `<li>${item.name} - ${item.quantity} x ${item.price} EGP</li>`).join('')}
+                    ${emailItemsWithDetails.map(item => `<li>${item.name} - ${item.quantity} x ${item.price} EGP</li>`).join('')}
                 </ul>
                 <p>We will notify you when your order is shipped.</p>
             `
         };
 
-        // Send Admin Notification Email
+        // Send Admin Email (Package Name + Contents)
         const adminMailOptions = {
             from: process.env.EMAIL_USER,
-            to: process.env.EMAIL_USER, // Send to self/admin
+            to: process.env.EMAIL_USER,
             subject: 'New Order!',
             html: `
                 <h1>New Order Received!</h1>
@@ -161,7 +248,14 @@ router.post('/', protect, async (req, res) => {
 
                 <h2>Order Items</h2>
                 <ul>
-                    ${cartItemsForEmail.map(item => `<li>${item.name} - ${item.quantity} x ${item.price} EGP</li>`).join('')}
+                    ${emailItemsWithDetails.map(item => {
+                        let itemString = `<li><strong>${item.name}</strong> - ${item.quantity} x ${item.price} EGP`;
+                        if (item.details) {
+                            itemString += `<br><small>Contains: ${item.details}</small>`;
+                        }
+                        itemString += `</li>`;
+                        return itemString;
+                    }).join('')}
                 </ul>
             `
         };
@@ -210,6 +304,7 @@ router.get('/all', isAdmin, async (req, res) => {
         const orders = await Order.find()
             .populate('user', 'id firstName lastName email phone governorate city address')
             .populate('products.product', 'name price image')
+            .populate('products.package', 'name price image')
             .sort({ createdAt: -1 });
         res.json(orders);
     } catch (error) {
@@ -246,10 +341,26 @@ router.put('/:id', isAdmin, async (req, res) => {
         // If cancelling, restore stock
         if (status === 'Cancelled' && order.status !== 'Cancelled') {
             for (const item of order.products) {
-                const product = await Product.findById(item.product);
-                if (product) {
-                    product.stock += item.quantity;
-                    await product.save();
+                if (item.product) {
+                    const product = await Product.findById(item.product);
+                    if (product) {
+                        product.stock += item.quantity;
+                        await product.save();
+                    }
+                } else if (item.package) {
+                    const pkg = await Package.findById(item.package).populate('includedProducts');
+                    if (pkg) {
+                        pkg.stock += item.quantity;
+                        await pkg.save();
+                        
+                        for (const prod of pkg.includedProducts) {
+                             const currentProd = await Product.findById(prod._id);
+                             if (currentProd) {
+                                 currentProd.stock += item.quantity;
+                                 await currentProd.save();
+                             }
+                        }
+                    }
                 }
             }
         }

@@ -8,7 +8,7 @@ const { checkAdminRoleHeader } = require('../middleware/authMiddleware');
 // @access  Admin only (Header x-role: admin)
 router.post('/', checkAdminRoleHeader, async (req, res) => {
     try {
-        const { code, discountPercentage, maxUsage, maxDiscountValue, applicableProducts, isActive } = req.body;
+        const { code, discountPercentage, maxUsage, maxDiscountValue, applicableProducts, applicablePackages, isActive } = req.body;
 
         // Check if coupon already exists
         const existingCoupon = await Coupon.findOne({ code });
@@ -22,6 +22,7 @@ router.post('/', checkAdminRoleHeader, async (req, res) => {
             maxUsage,
             maxDiscountValue,
             applicableProducts,
+            applicablePackages,
             isActive
         });
 
@@ -51,7 +52,7 @@ router.get('/', checkAdminRoleHeader, async (req, res) => {
 // @access  Admin only (Header x-role: admin)
 router.put('/:id', checkAdminRoleHeader, async (req, res) => {
     try {
-        const { code, discountPercentage, maxUsage, maxDiscountValue, applicableProducts, isActive } = req.body;
+        const { code, discountPercentage, maxUsage, maxDiscountValue, applicableProducts, applicablePackages, isActive } = req.body;
 
         const coupon = await Coupon.findById(req.params.id);
         if (!coupon) {
@@ -64,6 +65,7 @@ router.put('/:id', checkAdminRoleHeader, async (req, res) => {
         if (maxUsage !== undefined) coupon.maxUsage = maxUsage;
         if (maxDiscountValue !== undefined) coupon.maxDiscountValue = maxDiscountValue;
         if (applicableProducts) coupon.applicableProducts = applicableProducts;
+        if (applicablePackages) coupon.applicablePackages = applicablePackages;
         if (isActive !== undefined) coupon.isActive = isActive;
 
         await coupon.save();

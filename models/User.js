@@ -45,6 +45,10 @@ const userSchema = new mongoose.Schema({
                 type: mongoose.Schema.Types.ObjectId,
                 ref: 'Product'
             },
+            package: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Package'
+            },
             quantity: {
                 type: Number,
                 default: 1

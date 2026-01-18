@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const Product = require('../models/Product');
+const Package = require('../models/Package');
 const Coupon = require('../models/Coupon');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -10,7 +11,9 @@ const { protect } = require('../middleware/authMiddleware');
 // @access  Private
 router.get('/', protect, async (req, res) => {
     try {
-        const user = await User.findById(req.user._id).populate('cart.product');
+        const user = await User.findById(req.user._id)
+            .populate('cart.product')
+            .populate('cart.package');
         
         let subtotal = 0;
         const cartItems = user.cart.map(item => {
@@ -18,8 +21,12 @@ router.get('/', protect, async (req, res) => {
                 const itemTotal = item.product.price * item.quantity;
                 subtotal += itemTotal;
                 return item;
+            } else if (item.package) {
+                const itemTotal = item.package.price * item.quantity;
+                subtotal += itemTotal;
+                return item;
             }
-            return null; // Should ideally filter these out
+            return null;
         }).filter(Boolean);
 
         let discountAmount = 0;
@@ -40,11 +47,25 @@ router.get('/', protect, async (req, res) => {
                     };
 
                     cartItems.forEach(item => {
-                        // Check if coupon applies to this product
-                        if (coupon.applicableProducts.length === 0 || 
-                            coupon.applicableProducts.map(p => p.toString()).includes(item.product._id.toString())) {
-                            
-                            const itemTotal = item.product.price * item.quantity;
+                        let applies = false;
+                        let price = 0;
+
+                        if (item.product) {
+                            price = item.product.price;
+                            if (coupon.applicableProducts.length === 0 || 
+                                coupon.applicableProducts.map(p => p.toString()).includes(item.product._id.toString())) {
+                                applies = true;
+                            }
+                        } else if (item.package) {
+                            price = item.package.price;
+                             if (coupon.applicablePackages.length === 0 || 
+                                coupon.applicablePackages.map(p => p.toString()).includes(item.package._id.toString())) {
+                                applies = true;
+                            }
+                        }
+
+                        if (applies) {
+                            const itemTotal = price * item.quantity;
                             const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
                             discountAmount += itemDiscount;
                         }
@@ -80,38 +101,58 @@ router.get('/', protect, async (req, res) => {
 // @route   POST /api/cart
 // @access  Private
 router.post('/', protect, async (req, res) => {
-    const { productId, quantity } = req.body;
+    const { productId, packageId, quantity } = req.body;
+
+    if (!productId && !packageId) {
+        return res.status(400).json({ message: 'Must provide productId or packageId' });
+    }
 
     try {
-        const product = await Product.findById(productId);
-        if (!product) {
-            return res.status(404).json({ message: 'Product not found' });
-        }
-
         const user = await User.findById(req.user._id);
-
-        // Check if product already in cart
-        const cartItemIndex = user.cart.findIndex(item => item.product.toString() === productId);
-
         let newQuantity = quantity || 1;
-        if (cartItemIndex > -1) {
-            newQuantity += user.cart[cartItemIndex].quantity;
-        }
 
-        if (newQuantity > product.stock) {
-            return res.status(400).json({ message: `Not enough stock. Available: ${product.stock}` });
-        }
+        if (productId) {
+            const product = await Product.findById(productId);
+            if (!product) return res.status(404).json({ message: 'Product not found' });
+            
+            const cartItemIndex = user.cart.findIndex(item => item.product && item.product.toString() === productId);
+            
+            if (cartItemIndex > -1) {
+                newQuantity += user.cart[cartItemIndex].quantity;
+            }
 
-        if (cartItemIndex > -1) {
-            // Product exists in cart, update quantity
-            user.cart[cartItemIndex].quantity = newQuantity;
-        } else {
-            // Add new product to cart
-            user.cart.push({ product: productId, quantity: quantity || 1 });
+            if (newQuantity > product.stock) {
+                return res.status(400).json({ message: `Not enough stock. Available: ${product.stock}` });
+            }
+
+            if (cartItemIndex > -1) {
+                user.cart[cartItemIndex].quantity = newQuantity;
+            } else {
+                user.cart.push({ product: productId, quantity: quantity || 1 });
+            }
+        } else if (packageId) {
+            const pkg = await Package.findById(packageId);
+            if (!pkg) return res.status(404).json({ message: 'Package not found' });
+
+            const cartItemIndex = user.cart.findIndex(item => item.package && item.package.toString() === packageId);
+
+            if (cartItemIndex > -1) {
+                newQuantity += user.cart[cartItemIndex].quantity;
+            }
+
+            if (newQuantity > pkg.stock) {
+                return res.status(400).json({ message: `Not enough stock. Available: ${pkg.stock}` });
+            }
+
+            if (cartItemIndex > -1) {
+                user.cart[cartItemIndex].quantity = newQuantity;
+            } else {
+                user.cart.push({ package: packageId, quantity: quantity || 1 });
+            }
         }
 
         await user.save();
-        const updatedUser = await User.findById(req.user._id).populate('cart.product');
+        const updatedUser = await User.findById(req.user._id).populate('cart.product').populate('cart.package');
         res.json(updatedUser.cart);
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -121,16 +162,32 @@ router.post('/', protect, async (req, res) => {
 // @desc    Update cart item quantity
 // @route   PUT /api/cart/:itemId
 // @access  Private
-router.put('/:productId', protect, async (req, res) => {
+router.put('/:itemId', protect, async (req, res) => {
     const { quantity } = req.body;
-    const { productId } = req.params;
+    const { itemId } = req.params;
 
     try {
         const user = await User.findById(req.user._id);
-        const cartItemIndex = user.cart.findIndex(item => item.product.toString() === productId);
+        
+        // Try finding by product ID match
+        let cartItemIndex = user.cart.findIndex(item => item.product && item.product.toString() === itemId);
+        let isPackage = false;
+
+        // If not found, try finding by package ID match
+        if (cartItemIndex === -1) {
+            cartItemIndex = user.cart.findIndex(item => item.package && item.package.toString() === itemId);
+            if (cartItemIndex > -1) isPackage = true;
+        }
 
         if (cartItemIndex > -1) {
-            const product = await Product.findById(productId);
+            let stock = 0;
+            if (isPackage) {
+                const pkg = await Package.findById(itemId);
+                stock = pkg.stock;
+            } else {
+                const product = await Product.findById(itemId);
+                stock = product.stock;
+            }
             
             // req.body.quantity is now the delta (change amount)
             const changeAmount = parseInt(quantity);
@@ -144,8 +201,8 @@ router.put('/:productId', protect, async (req, res) => {
             }
 
             // Check if quantity exceeds stock
-            if (newQuantity > product.stock) {
-                 newQuantity = product.stock;
+            if (newQuantity > stock) {
+                 newQuantity = stock;
                  message = "Quantity updated to maximum available stock";
             }
 
@@ -153,7 +210,7 @@ router.put('/:productId', protect, async (req, res) => {
             user.cart[cartItemIndex].quantity = newQuantity;
 
             await user.save();
-            const updatedUser = await User.findById(req.user._id).populate('cart.product');
+            const updatedUser = await User.findById(req.user._id).populate('cart.product').populate('cart.package');
             
             if (message) {
                 res.json({ cart: updatedUser.cart, message });
@@ -171,15 +228,19 @@ router.put('/:productId', protect, async (req, res) => {
 // @desc    Remove item from cart
 // @route   DELETE /api/cart/:itemId
 // @access  Private
-router.delete('/:productId', protect, async (req, res) => {
-     const { productId } = req.params;
+router.delete('/:itemId', protect, async (req, res) => {
+     const { itemId } = req.params;
 
      try {
          const user = await User.findById(req.user._id);
-         user.cart = user.cart.filter(item => item.product.toString() !== productId);
+         user.cart = user.cart.filter(item => {
+             const prodId = item.product ? item.product.toString() : null;
+             const pkgId = item.package ? item.package.toString() : null;
+             return prodId !== itemId && pkgId !== itemId;
+         });
 
          await user.save();
-         const updatedUser = await User.findById(req.user._id).populate('cart.product');
+         const updatedUser = await User.findById(req.user._id).populate('cart.product').populate('cart.package');
          res.json(updatedUser.cart);
      } catch (error) {
          res.status(500).json({ message: 'Server Error', error: error.message });
@@ -224,14 +285,20 @@ router.post('/apply-coupon', protect, async (req, res) => {
         const user = await User.findById(req.user._id);
 
         // Check if coupon.applicableProducts has items
-        if (coupon.applicableProducts && coupon.applicableProducts.length > 0) {
-            // Check if cart has at least one of these products
-            const cartProductIds = user.cart.map(item => item.product.toString());
+        if ((coupon.applicableProducts && coupon.applicableProducts.length > 0) || 
+            (coupon.applicablePackages && coupon.applicablePackages.length > 0)) {
+            
+            // Check if cart has at least one of these products OR packages
+            const cartProductIds = user.cart.map(item => item.product ? item.product.toString() : null).filter(Boolean);
+            const cartPackageIds = user.cart.map(item => item.package ? item.package.toString() : null).filter(Boolean);
+            
             const applicableProductIds = coupon.applicableProducts.map(p => p.toString());
+            const applicablePackageIds = coupon.applicablePackages.map(p => p.toString());
             
             const hasApplicableProduct = cartProductIds.some(id => applicableProductIds.includes(id));
+            const hasApplicablePackage = cartPackageIds.some(id => applicablePackageIds.includes(id));
 
-            if (!hasApplicableProduct) {
+            if (!hasApplicableProduct && !hasApplicablePackage) {
                 return res.status(400).json({ message: 'Coupon not applicable to items in cart' });
             }
         }

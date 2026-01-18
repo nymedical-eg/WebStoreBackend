@@ -32,6 +32,12 @@ const couponSchema = new mongoose.Schema({
             ref: 'Product'
         }
     ],
+    applicablePackages: [
+        {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Package'
+        }
+    ],
     isActive: {
         type: Boolean,
         default: true
