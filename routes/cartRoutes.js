@@ -222,6 +222,20 @@ router.post('/apply-coupon', protect, async (req, res) => {
         }
 
         const user = await User.findById(req.user._id);
+
+        // Check if coupon.applicableProducts has items
+        if (coupon.applicableProducts && coupon.applicableProducts.length > 0) {
+            // Check if cart has at least one of these products
+            const cartProductIds = user.cart.map(item => item.product.toString());
+            const applicableProductIds = coupon.applicableProducts.map(p => p.toString());
+            
+            const hasApplicableProduct = cartProductIds.some(id => applicableProductIds.includes(id));
+
+            if (!hasApplicableProduct) {
+                return res.status(400).json({ message: 'Coupon not applicable to items in cart' });
+            }
+        }
+
         user.cartCoupon = code;
         await user.save();
 
