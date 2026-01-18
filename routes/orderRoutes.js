@@ -129,7 +129,8 @@ router.post('/', protect, async (req, res) => {
             html: `
                 <h1>Thank you for your order!</h1>
                 <p>Order ID: ${createdOrder._id}</p>
-                <p>Total Amount: ${totalAmount} EGP</p>
+                <p><strong>Total Amount: ${finalAmount.toFixed(2)} EGP</strong></p>
+                ${couponAppliedData ? `<p>(Includes discount from coupon: ${couponAppliedData.code})</p>` : ''}
                 <h3>Items:</h3>
                 <ul>
                     ${cartItemsForEmail.map(item => `<li>${item.name} - ${item.quantity} x ${item.price} EGP</li>`).join('')}
@@ -147,7 +148,9 @@ router.post('/', protect, async (req, res) => {
                 <h1>New Order Received!</h1>
                 <h2>Order Details</h2>
                 <p><strong>Order ID:</strong> ${createdOrder._id}</p>
-                <p><strong>Total Amount:</strong> ${totalAmount} EGP</p>
+                <p><strong>Subtotal:</strong> ${totalAmount.toFixed(2)} EGP</p>
+                <p><strong>Total (After Discount):</strong> ${finalAmount.toFixed(2)} EGP</p>
+                <p><strong>Coupon Used:</strong> ${couponAppliedData ? couponAppliedData.code : 'None'}</p>
                 
                 <h2>Customer Details</h2>
                 <p><strong>User ID:</strong> ${user._id}</p>
