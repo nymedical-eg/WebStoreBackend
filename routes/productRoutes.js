@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const { isAdmin } = require('../middleware/auth');
 
@@ -10,6 +11,35 @@ router.get('/random', async (req, res) => {
             { $sample: { size: 3 } }
         ]);
         res.json(products);
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// @route   POST /api/products/batch-details
+// @desc    Get details for a list of products (Public)
+router.post('/batch-details', async (req, res) => {
+    const { productIds } = req.body;
+
+    if (!Array.isArray(productIds)) {
+        return res.status(400).json({ message: 'Please provide an array of productIds' });
+    }
+
+    try {
+        const results = [];
+        for (const id of productIds) {
+            if (mongoose.Types.ObjectId.isValid(id)) {
+                const product = await Product.findById(id);
+                if (product) {
+                    results.push(product);
+                } else {
+                    results.push({ id, message: "Product Data not found. Check Availability!" });
+                }
+            } else {
+                results.push({ id, message: "Product Data not found. Check Availability!" });
+            }
+        }
+        res.json(results);
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
