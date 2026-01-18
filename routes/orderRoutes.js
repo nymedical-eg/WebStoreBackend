@@ -157,6 +157,7 @@ router.post('/', protect, async (req, res) => {
                 <p><strong>Name:</strong> ${user.firstName} ${user.lastName}</p>
                 <p><strong>Email:</strong> ${user.email}</p>
                 <p><strong>Phone:</strong> ${user.phone}</p>
+                <p><strong>Address:</strong> ${user.address}, ${user.city}, ${user.governorate}</p>
 
                 <h2>Order Items</h2>
                 <ul>
@@ -207,7 +208,7 @@ router.get('/', protect, async (req, res) => {
 router.get('/all', isAdmin, async (req, res) => {
     try {
         const orders = await Order.find()
-            .populate('user', 'id firstName lastName email')
+            .populate('user', 'id firstName lastName email phone governorate city address')
             .populate('products.product', 'name price image')
             .sort({ createdAt: -1 });
         res.json(orders);

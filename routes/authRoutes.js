@@ -16,9 +16,9 @@ const generateToken = (id) => {
 // @route   POST /api/auth/register
 // @access  Public
 router.post('/register', async (req, res) => {
-    const { firstName, lastName, email, phone, password } = req.body;
+    const { firstName, lastName, email, phone, password, governorate, city, address } = req.body;
 
-    if (!firstName || !lastName || !email || !phone || !password) {
+    if (!firstName || !lastName || !email || !phone || !password || !governorate || !city || !address) {
         return res.status(400).json({ message: 'Please add all fields' });
     }
 
@@ -40,6 +40,9 @@ router.post('/register', async (req, res) => {
             lastName,
             email,
             phone,
+            governorate,
+            city,
+            address,
             password: hashedPassword,
         });
 
@@ -50,6 +53,9 @@ router.post('/register', async (req, res) => {
                 lastName: user.lastName,
                 email: user.email,
                 phone: user.phone,
+                governorate: user.governorate,
+                city: user.city,
+                address: user.address,
                 token: generateToken(user._id),
             });
         }
@@ -95,11 +101,11 @@ router.get('/me', protect, async (req, res) => {
 router.put('/profile', protect, async (req, res) => {
     // Strict validation: Ensure only allowed fields are being updated
     const updates = Object.keys(req.body);
-    const allowedUpdates = ['firstName', 'lastName', 'phone'];
+    const allowedUpdates = ['firstName', 'lastName', 'phone', 'governorate', 'city', 'address'];
     const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
 
     if (!isValidOperation) {
-        return res.status(400).json({ message: 'Only firstName, lastName, and phone updates are allowed' });
+        return res.status(400).json({ message: 'Only profile details and address updates are allowed' });
     }
 
     try {
@@ -109,6 +115,9 @@ router.put('/profile', protect, async (req, res) => {
             user.firstName = req.body.firstName || user.firstName;
             user.lastName = req.body.lastName || user.lastName;
             user.phone = req.body.phone || user.phone;
+            user.governorate = req.body.governorate || user.governorate;
+            user.city = req.body.city || user.city;
+            user.address = req.body.address || user.address;
 
             const updatedUser = await user.save();
 
@@ -118,6 +127,9 @@ router.put('/profile', protect, async (req, res) => {
                 lastName: updatedUser.lastName,
                 email: updatedUser.email,
                 phone: updatedUser.phone,
+                governorate: updatedUser.governorate,
+                city: updatedUser.city,
+                address: updatedUser.address,
                 token: generateToken(updatedUser._id),
             });
         } else {
