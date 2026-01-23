@@ -418,7 +418,7 @@ router.post('/add-to-cart', async (req, res) => {
                     _id: product._id,
                     name: product.name,
                     price: product.price,
-                    images: product.images, // Assuming images field exists
+                    image: product.image, // Assuming images field exists
                     stock: product.stock
                 },
                 quantity: qty,
@@ -633,7 +633,7 @@ router.post('/view-cart', async (req, res) => {
                              _id: product._id,
                              name: product.name,
                              price: product.price,
-                             images: product.images,
+                             image: product.image,
                              stock: product.stock
                          },
                          quantity: item.quantity,
