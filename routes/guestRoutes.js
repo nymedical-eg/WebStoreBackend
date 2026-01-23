@@ -608,4 +608,67 @@ router.post('/clear-cart', async (req, res) => {
     res.json({ message: 'Cart cleared' });
 });
 
+
+// @desc    View cart (Hydrate items with full details)
+// @route   POST /api/guest/view-cart
+// @access  Public
+router.post('/view-cart', async (req, res) => {
+    const { items } = req.body;
+
+    if (!items || !Array.isArray(items)) {
+        return res.status(400).json({ message: 'Items array is required' });
+    }
+
+    try {
+        const fullCartItems = [];
+
+        for (const item of items) {
+             let hydratedItem = null;
+
+             if (item.productId) {
+                 const product = await Product.findById(item.productId);
+                 if (product) {
+                     hydratedItem = {
+                         product: {
+                             _id: product._id,
+                             name: product.name,
+                             price: product.price,
+                             images: product.images,
+                             stock: product.stock
+                         },
+                         quantity: item.quantity,
+                         type: 'product',
+                         totalPrice: product.price * (item.quantity || 1)
+                     };
+                 }
+             } else if (item.packageId) {
+                 const pkg = await Package.findById(item.packageId);
+                 if (pkg) {
+                     hydratedItem = {
+                         package: {
+                             _id: pkg._id,
+                             name: pkg.name,
+                             price: pkg.price,
+                             image: pkg.image,
+                             stock: pkg.stock
+                         },
+                         quantity: item.quantity,
+                         type: 'package',
+                         totalPrice: pkg.price * (item.quantity || 1)
+                     };
+                 }
+             }
+
+             if (hydratedItem) {
+                 fullCartItems.push(hydratedItem);
+             }
+        }
+
+        res.json({ cart: fullCartItems });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
 module.exports = router;
