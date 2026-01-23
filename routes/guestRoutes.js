@@ -386,4 +386,226 @@ router.post('/order', async (req, res) => {
     }
 });
 
+
+// @desc    Validate and retrieve item details for guest cart
+// @route   POST /api/guest/add-to-cart
+// @access  Public
+router.post('/add-to-cart', async (req, res) => {
+    const { productId, packageId, quantity } = req.body;
+    const qty = parseInt(quantity) || 1;
+
+    if (!productId && !packageId) {
+        return res.status(400).json({ message: 'Must provide productId or packageId' });
+    }
+
+    try {
+        if (productId) {
+            const product = await Product.findById(productId);
+            if (!product) {
+                return res.status(404).json({ message: 'Product not found' });
+            }
+            
+            if (qty > product.stock) {
+                 return res.status(400).json({ 
+                    message: `Not enough stock. Available: ${product.stock}`,
+                    stock: product.stock 
+                });
+            }
+
+            // Return lightweight object for frontend cart
+            return res.json({
+                product: {
+                    _id: product._id,
+                    name: product.name,
+                    price: product.price,
+                    images: product.images, // Assuming images field exists
+                    stock: product.stock
+                },
+                quantity: qty,
+                type: 'product'
+            });
+
+        } else if (packageId) {
+            const pkg = await Package.findById(packageId);
+            if (!pkg) {
+                 return res.status(404).json({ message: 'Package not found' });
+            }
+
+            if (qty > pkg.stock) {
+                return res.status(400).json({ 
+                    message: `Not enough stock. Available: ${pkg.stock}`,
+                    stock: pkg.stock
+                });
+            }
+
+            return res.json({
+                package: {
+                    _id: pkg._id,
+                    name: pkg.name,
+                    price: pkg.price,
+                    image: pkg.image, // Assuming image field exists
+                    stock: pkg.stock
+                },
+                quantity: qty,
+                type: 'package'
+            });
+        }
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+
+// @desc    Validate stock for quantity update
+// @route   POST /api/guest/update-quantity
+// @access  Public
+router.post('/update-quantity', async (req, res) => {
+    const { productId, packageId, quantity } = req.body;
+    const qty = parseInt(quantity);
+
+    if (qty < 1) {
+        return res.status(400).json({ message: "Quantity can't go lower than one" });
+    }
+
+    try {
+        if (productId) {
+            const product = await Product.findById(productId);
+            if (!product) return res.status(404).json({ message: 'Product not found' });
+            
+            if (qty > product.stock) {
+                return res.status(400).json({ 
+                    message: `Not enough stock. Available: ${product.stock}`,
+                    stock: product.stock
+                });
+            }
+            return res.json({ message: 'Quantity valid', quantity: qty });
+
+        } else if (packageId) {
+            const pkg = await Package.findById(packageId);
+            if (!pkg) return res.status(404).json({ message: 'Package not found' });
+
+            if (qty > pkg.stock) {
+                return res.status(400).json({ 
+                    message: `Not enough stock. Available: ${pkg.stock}`,
+                    stock: pkg.stock
+                });
+            }
+            return res.json({ message: 'Quantity valid', quantity: qty });
+        } else {
+             return res.status(400).json({ message: 'Must provide productId or packageId' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @desc    Apply coupon (Guest)
+// @route   POST /api/guest/apply-coupon
+// @access  Public
+router.post('/apply-coupon', async (req, res) => {
+    const { code, items } = req.body;
+
+    if (!code) return res.status(400).json({ message: 'Coupon code is required' });
+    if (!items || !Array.isArray(items)) return res.status(400).json({ message: 'Cart items are required to validate coupon' });
+
+    try {
+        const coupon = await Coupon.findOne({ code });
+
+        if (!coupon) {
+            return res.status(404).json({ message: 'Coupon not found' });
+        }
+
+        if (!coupon.isActive) {
+            return res.status(400).json({ message: 'Coupon is not active' });
+        }
+
+        if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+            return res.status(400).json({ message: 'Coupon usage limit reached' });
+        }
+
+        // Validate applicability against provided items
+        let discountAmount = 0;
+        let appliesToAtLeastOne = false;
+
+        // Fetch details to calculate potential discount (securely)
+        for (const item of items) {
+             let price = 0;
+             let itemId = null;
+             let type = '';
+
+             if (item.productId) {
+                 const product = await Product.findById(item.productId);
+                 if (product) {
+                     price = product.price;
+                     itemId = product._id.toString();
+                     type = 'product';
+                 }
+             } else if (item.packageId) {
+                 const pkg = await Package.findById(item.packageId);
+                 if (pkg) {
+                     price = pkg.price;
+                     itemId = pkg._id.toString();
+                     type = 'package';
+                 }
+             }
+
+             if (itemId) {
+                 let applies = false;
+                 if (type === 'product') {
+                     if (coupon.applicableProducts.length === 0 || 
+                         coupon.applicableProducts.map(p => p.toString()).includes(itemId)) {
+                         applies = true;
+                     }
+                 } else if (type === 'package') {
+                      if (coupon.applicablePackages.length === 0 || 
+                         coupon.applicablePackages.map(p => p.toString()).includes(itemId)) {
+                         applies = true;
+                     }
+                 }
+
+                 if (applies) {
+                     appliesToAtLeastOne = true;
+                     const itemTotal = price * (item.quantity || 1);
+                     discountAmount += (itemTotal * coupon.discountPercentage) / 100;
+                 }
+             }
+        }
+
+        if (!appliesToAtLeastOne && (coupon.applicableProducts.length > 0 || coupon.applicablePackages.length > 0)) {
+            return res.status(400).json({ message: 'Coupon not applicable to items in cart' });
+        }
+
+        if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
+             discountAmount = coupon.maxDiscountValue;
+        }
+
+        res.json({
+            message: 'Coupon applied successfully',
+            coupon: {
+                code: coupon.code,
+                discountPercentage: coupon.discountPercentage,
+                discountAmount: Number(discountAmount.toFixed(2)) // Estimated discount based on current cart
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @desc    Remove coupon (Guest - No-op for backend, frontend clears state)
+// @route   POST /api/guest/remove-coupon
+// @access  Public
+router.post('/remove-coupon', async (req, res) => {
+    res.json({ message: 'Coupon removed successfully' });
+});
+
+// @desc    Clear cart (Guest - No-op for backend, frontend clears state)
+// @route   POST /api/guest/clear-cart
+// @access  Public
+router.post('/clear-cart', async (req, res) => {
+    res.json({ message: 'Cart cleared' });
+});
+
 module.exports = router;
