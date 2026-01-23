@@ -1,72 +1,190 @@
 const express = require('express');
 const router = express.Router();
-require('dotenv').config(); // Ensure env vars are loaded
+require('dotenv').config();
 const nodemailer = require('nodemailer');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Package = require('../models/Package');
-const User = require('../models/User');
 const Coupon = require('../models/Coupon');
-const { protect } = require('../middleware/authMiddleware');
-const { isAdmin } = require('../middleware/auth');
 
 // Setup Nodemailer transporter
-// NOTE: This requires valid credentials in .env to work
 const transporter = nodemailer.createTransport({
-    service: 'gmail', // or your preferred service
+    service: 'gmail',
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     }
 });
 
-// @desc    Create new order
-// @route   POST /api/orders
-// @access  Private
-router.post('/', protect, async (req, res) => {
+// @desc    Calculate cart totals (Guest)
+// @route   POST /api/guest/calculate-cart
+// @access  Public
+router.post('/calculate-cart', async (req, res) => {
+    const { items, couponCode } = req.body;
+
+    if (!items || !Array.isArray(items)) {
+        return res.status(400).json({ message: 'Items array is required' });
+    }
+
     try {
+        let subtotal = 0;
+        const calculatedItems = [];
+
+        // 1. Calculate Subtotal & Validate Stock
+        for (const item of items) {
+            if (item.productId) {
+                const product = await Product.findById(item.productId);
+                if (!product) {
+                    return res.status(404).json({ message: `Product not found: ${item.productId}` });
+                }
+                if (item.quantity > product.stock) {
+                    return res.status(400).json({ 
+                        message: `Not enough stock for product: ${product.name}. Available: ${product.stock}` 
+                    });
+                }
+                const itemTotal = product.price * item.quantity;
+                subtotal += itemTotal;
+                calculatedItems.push({
+                    product: product,
+                    quantity: item.quantity,
+                    price: product.price,
+                    type: 'product'
+                });
+            } else if (item.packageId) {
+                const pkg = await Package.findById(item.packageId);
+                if (!pkg) {
+                    return res.status(404).json({ message: `Package not found: ${item.packageId}` });
+                }
+                if (item.quantity > pkg.stock) {
+                    return res.status(400).json({ 
+                        message: `Not enough stock for package: ${pkg.name}. Available: ${pkg.stock}` 
+                    });
+                }
+                const itemTotal = pkg.price * item.quantity;
+                subtotal += itemTotal;
+                calculatedItems.push({
+                    package: pkg,
+                    quantity: item.quantity,
+                    price: pkg.price,
+                    type: 'package'
+                });
+            }
+        }
+
+        // 2. Apply Coupon
+        let discountAmount = 0;
+        let couponDetails = null;
+
+        if (couponCode) {
+            const coupon = await Coupon.findOne({ code: couponCode });
+            
+            if (coupon && coupon.isActive) {
+                 if (coupon.maxUsage !== null && coupon.usedCount >= coupon.maxUsage) {
+                     return res.status(400).json({ message: 'coupon has been used up' });
+                 }
+
+                 // Calculate potential discount
+                 calculatedItems.forEach(item => {
+                     let applies = false;
+                     if (item.type === 'product') {
+                         if (coupon.applicableProducts.length === 0 || 
+                             coupon.applicableProducts.map(p => p.toString()).includes(item.product._id.toString())) {
+                             applies = true;
+                         }
+                     } else if (item.type === 'package') {
+                          if (coupon.applicablePackages.length === 0 || 
+                             coupon.applicablePackages.map(p => p.toString()).includes(item.package._id.toString())) {
+                             applies = true;
+                         }
+                     }
+
+                     if (applies) {
+                         const itemTotal = item.price * item.quantity;
+                         const itemDiscount = (itemTotal * coupon.discountPercentage) / 100;
+                         discountAmount += itemDiscount;
+                     }
+                 });
+
+                 // Verify Applicability
+                 if (discountAmount === 0 && (coupon.applicableProducts.length > 0 || coupon.applicablePackages.length > 0)) {
+                      return res.status(400).json({ message: 'Coupon not applicable to items in cart' });
+                 }
+
+                 if (coupon.maxDiscountValue !== null && discountAmount > coupon.maxDiscountValue) {
+                     discountAmount = coupon.maxDiscountValue;
+                 }
+
+                 couponDetails = {
+                     code: coupon.code,
+                     discountPercentage: coupon.discountPercentage,
+                     discountAmount: Number(discountAmount.toFixed(2))
+                 };
+            } else {
+                 return res.status(400).json({ message: 'Invalid or inactive coupon' });
+            }
+        }
+
+        const total = Math.max(0, subtotal - discountAmount);
+
+        res.json({
+            subtotal: Number(subtotal.toFixed(2)),
+            discountAmount: Number(discountAmount.toFixed(2)),
+            total: Number(total.toFixed(2)),
+            coupon: couponDetails
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+});
+
+// @desc    Create new guest order
+// @route   POST /api/guest/order
+// @access  Public
+router.post('/order', async (req, res) => {
+    try {
+        const { guestInfo, items, couponCode } = req.body;
         let orderItems = [];
-        let user = null;
         let customerEmail = '';
         let customerName = '';
         let customerPhone = '';
         let customerAddress = '';
         let usedCouponCode = null;
 
-        // --- AUTHENTICATED USER FLOW ---
-        user = await User.findById(req.user._id).populate('cart.product').populate('cart.package');
-        if (!user.cart || user.cart.length === 0) {
-            return res.status(400).json({ message: 'No items in cart' });
+        if (!guestInfo || !items || items.length === 0) {
+            return res.status(400).json({ message: 'Guest order requires guestInfo and items' });
         }
 
-        orderItems = user.cart.map(item => {
-            if (item.product) {
-                return {
-                    product: item.product._id,
+        // Fetch prices from DB based on IDs sent
+        for (const item of items) {
+            if (item.productId) {
+                const product = await Product.findById(item.productId);
+                if (!product) return res.status(404).json({ message: `Product not found: ${item.productId}` });
+                orderItems.push({
+                    product: product._id,
                     quantity: item.quantity,
-                    price: item.product.price,
-                    name: item.product.name,
+                    price: product.price,
+                    name: product.name,
                     type: 'product'
-                };
-            } else if (item.package) {
-                return {
-                    package: item.package._id,
+                });
+            } else if (item.packageId) {
+                const pkg = await Package.findById(item.packageId);
+                if (!pkg) return res.status(404).json({ message: `Package not found: ${item.packageId}` });
+                orderItems.push({
+                    package: pkg._id,
                     quantity: item.quantity,
-                    price: item.package.price,
-                    name: item.package.name,
+                    price: pkg.price,
+                    name: pkg.name,
                     type: 'package'
-                };
+                });
             }
-            return null;
-        }).filter(Boolean);
+        }
 
-        customerEmail = user.email;
-        customerName = `${user.firstName} ${user.lastName}`;
-        customerPhone = user.phone;
-        customerAddress = `${user.address}, ${user.city}, ${user.governorate}`;
-        usedCouponCode = user.cartCoupon; // Coupon attached to user account
-
-        // --- COMMON LOGIC (Stock, Total, Coupon, Save, Email) ---
+        customerEmail = guestInfo.email;
+        customerName = `${guestInfo.firstName} ${guestInfo.lastName}`;
+        customerPhone = guestInfo.phone;
+        customerAddress = `${guestInfo.address}, ${guestInfo.city}, ${guestInfo.governorate}`;
+        usedCouponCode = couponCode;
 
         // Validate stock for all items
         for (const item of orderItems) {
@@ -80,10 +198,8 @@ router.post('/', protect, async (req, res) => {
                 if (pkg.stock < item.quantity) {
                     return res.status(400).json({ message: `Not enough stock for package: ${pkg.name}. Available: ${pkg.stock}` });
                 }
-                // Check Component Stock
                 for (const prod of pkg.includedProducts) {
                     const currentProd = await Product.findById(prod._id);
-                    // Assuming 1:1 ratio for package components
                     if (currentProd.stock < item.quantity) {
                          return res.status(400).json({ message: `Not enough stock for included product: ${currentProd.name} (in package ${pkg.name}). Available: ${currentProd.stock}` });
                     }
@@ -142,8 +258,8 @@ router.post('/', protect, async (req, res) => {
         }
 
         const order = new Order({
-            user: user ? user._id : null, 
-            guestInfo: user ? undefined : guestInfo,
+            user: null, 
+            guestInfo: guestInfo,
             products: orderItems.map(item => {
                 if(item.type === 'product') return { product: item.product, quantity: item.quantity, price: item.price };
                 return { package: item.package, quantity: item.quantity, price: item.price };
@@ -178,15 +294,7 @@ router.post('/', protect, async (req, res) => {
             }
         }
 
-        // Clear User Cart (Only if User)
-        if (user) {
-            user.orders.push(createdOrder._id);
-            user.cart = [];
-            user.cartCoupon = null;
-            await user.save();
-        }
-
-        // Send User/Guest Email
+        // Send Emails
         const emailItemsWithDetails = [];
         for (const item of orderItems) {
             if (item.type === 'product') {
@@ -228,9 +336,9 @@ router.post('/', protect, async (req, res) => {
         const adminMailOptions = {
             from: process.env.EMAIL_USER,
             to: process.env.EMAIL_USER,
-            subject: 'New Order Received!',
+            subject: 'New Order Received! (Guest)',
             html: `
-                <h1>New Order Received!</h1>
+                <h1>New Guest Order Received!</h1>
                 <h2>Order Details</h2>
                 <p><strong>Order ID:</strong> ${createdOrder._id}</p>
                 <p><strong>Subtotal:</strong> ${totalAmount.toFixed(2)} EGP</p>
@@ -238,7 +346,7 @@ router.post('/', protect, async (req, res) => {
                 <p><strong>Coupon Used:</strong> ${couponAppliedData ? couponAppliedData.code : 'None'}</p>
                 
                 <h2>Customer Details</h2>
-                <p><strong>Type:</strong> ${user ? 'Registered User' : 'Guest'}</p>
+                <p><strong>Type:</strong> Guest</p>
                 <p><strong>Name:</strong> ${customerName}</p>
                 <p><strong>Email:</strong> ${customerEmail}</p>
                 <p><strong>Phone:</strong> ${customerPhone}</p>
@@ -261,7 +369,7 @@ router.post('/', protect, async (req, res) => {
         try {
              if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
                 await transporter.sendMail(userMailOptions);
-                console.log('Order confirmation email sent to user/guest');
+                console.log('Order confirmation email sent to guest');
                 await transporter.sendMail(adminMailOptions);
                 console.log('Order notification email sent to admin');
              } else {
@@ -275,98 +383,6 @@ router.post('/', protect, async (req, res) => {
 
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
-
-// @desc    Get logged in user orders
-// @route   GET /api/orders
-// @access  Private
-router.get('/', protect, async (req, res) => {
-    try {
-        const orders = await Order.find({ user: req.user._id })
-            .populate('products.product', 'name price image')
-            .sort({ createdAt: -1 });
-        res.json(orders);
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
-
-// @desc    Get all orders (Admin only)
-// @route   GET /api/orders/all
-// @access  Private/Admin
-router.get('/all', isAdmin, async (req, res) => {
-    try {
-        const orders = await Order.find()
-            .populate('user', 'id firstName lastName email phone governorate city address')
-            .populate('products.product', 'name price image')
-            .populate('products.package', 'name price image')
-            .sort({ createdAt: -1 });
-        res.json(orders);
-    } catch (error) {
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
-});
-
-// @desc    Update order status (Admin only)
-// @route   PUT /api/orders/:id
-// @access  Private/Admin
-router.put('/:id', isAdmin, async (req, res) => {
-    const { status } = req.body;
-
-    // Strict validation: Ensure only status is being updated
-    const updates = Object.keys(req.body);
-    const allowedUpdates = ['status'];
-    const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
-
-    if (!isValidOperation) {
-        return res.status(400).json({ message: 'Only status updates are allowed' });
-    }
-
-    try {
-        const order = await Order.findById(req.params.id);
-
-        if (!order) {
-            return res.status(404).json({ message: 'Order not found' });
-        }
-
-        if (order.status === 'Cancelled' && status !== 'Cancelled') {
-            return res.status(400).json({ message: 'Cannot un-cancel an order directly. Please create a new order.' });
-        }
-
-        // If cancelling, restore stock
-        if (status === 'Cancelled' && order.status !== 'Cancelled') {
-            for (const item of order.products) {
-                if (item.product) {
-                    const product = await Product.findById(item.product);
-                    if (product) {
-                        product.stock += item.quantity;
-                        await product.save();
-                    }
-                } else if (item.package) {
-                    const pkg = await Package.findById(item.package).populate('includedProducts');
-                    if (pkg) {
-                        pkg.stock += item.quantity;
-                        await pkg.save();
-                        
-                        for (const prod of pkg.includedProducts) {
-                             const currentProd = await Product.findById(prod._id);
-                             if (currentProd) {
-                                 currentProd.stock += item.quantity;
-                                 await currentProd.save();
-                             }
-                        }
-                    }
-                }
-            }
-        }
-
-        order.status = status;
-        const updatedOrder = await order.save();
-        res.json(updatedOrder);
-
-    } catch (error) {
-         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
 

@@ -54,6 +54,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/packages', packageRoutes);
+app.use('/api/guest', require('./routes/guestRoutes'));
 
 app.get('/', (req, res) => {
     res.send('API is running...');
