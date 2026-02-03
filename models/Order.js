@@ -43,6 +43,11 @@ const orderSchema = new mongoose.Schema({
         code: String,
         discountAmount: Number
     },
+    shippingCost: {
+        type: Number,
+        required: true,
+        default: 0
+    },
     status: {
         type: String,
         default: 'Pending',

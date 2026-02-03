@@ -83,13 +83,19 @@ router.get('/', protect, async (req, res) => {
             }
         }
 
-        const total = Math.max(0, subtotal - discountAmount);
+        let shippingCost = 0;
+        if (user.governorate) {
+             shippingCost = (user.governorate.trim().toLowerCase() === 'cairo') ? 100 : 150;
+        }
+
+        const total = Math.max(0, subtotal - discountAmount) + shippingCost;
 
         res.json({ 
             cart: user.cart, 
             subtotal: Number(subtotal.toFixed(2)),
             discountAmount: Number(discountAmount.toFixed(2)),
             total: Number(total.toFixed(2)),
+            shippingCost: shippingCost,
             coupon: couponDetails
         });
     } catch (error) {

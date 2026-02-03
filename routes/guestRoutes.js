@@ -20,7 +20,7 @@ const transporter = nodemailer.createTransport({
 // @route   POST /api/guest/calculate-cart
 // @access  Public
 router.post('/calculate-cart', async (req, res) => {
-    const { items, couponCode } = req.body;
+    const { items, couponCode, governorate } = req.body;
 
     if (!items || !Array.isArray(items)) {
         return res.status(400).json({ message: 'Items array is required' });
@@ -124,12 +124,18 @@ router.post('/calculate-cart', async (req, res) => {
             }
         }
 
-        const total = Math.max(0, subtotal - discountAmount);
+        let shippingCost = 0;
+        if (governorate) {
+             shippingCost = (governorate.trim().toLowerCase() === 'cairo') ? 100 : 150;
+        }
+
+        const total = Math.max(0, subtotal - discountAmount) + shippingCost;
 
         res.json({
             subtotal: Number(subtotal.toFixed(2)),
             discountAmount: Number(discountAmount.toFixed(2)),
             total: Number(total.toFixed(2)),
+            shippingCost: shippingCost,
             coupon: couponDetails
         });
 
@@ -257,6 +263,10 @@ router.post('/order', async (req, res) => {
             }
         }
 
+        // Calculate Shipping
+        const shippingCost = (guestInfo.governorate && guestInfo.governorate.trim().toLowerCase() === 'cairo') ? 100 : 150;
+        finalAmount += shippingCost;
+
         const order = new Order({
             user: null, 
             guestInfo: guestInfo,
@@ -265,7 +275,8 @@ router.post('/order', async (req, res) => {
                 return { package: item.package, quantity: item.quantity, price: item.price };
             }),
             totalAmount: Number(finalAmount.toFixed(2)),
-            couponApplied: couponAppliedData
+            couponApplied: couponAppliedData,
+            shippingCost: shippingCost
         });
 
         const createdOrder = await order.save();
@@ -323,6 +334,7 @@ router.post('/order', async (req, res) => {
             html: `
                 <h1>Thank you for your order!</h1>
                 <p>Order ID: ${createdOrder._id}</p>
+                <p>Shipping Cost: ${shippingCost.toFixed(2)} EGP</p>
                 <p><strong>Total Amount: ${finalAmount.toFixed(2)} EGP</strong></p>
                 ${couponAppliedData ? `<p>(Includes discount from coupon: ${couponAppliedData.code})</p>` : ''}
                 <h3>Items:</h3>
@@ -342,7 +354,8 @@ router.post('/order', async (req, res) => {
                 <h2>Order Details</h2>
                 <p><strong>Order ID:</strong> ${createdOrder._id}</p>
                 <p><strong>Subtotal:</strong> ${totalAmount.toFixed(2)} EGP</p>
-                <p><strong>Total (After Discount):</strong> ${finalAmount.toFixed(2)} EGP</p>
+                <p><strong>Shipping Cost:</strong> ${shippingCost.toFixed(2)} EGP</p>
+                <p><strong>Total (After Discount + Shipping):</strong> ${finalAmount.toFixed(2)} EGP</p>
                 <p><strong>Coupon Used:</strong> ${couponAppliedData ? couponAppliedData.code : 'None'}</p>
                 
                 <h2>Customer Details</h2>

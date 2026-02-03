@@ -141,6 +141,10 @@ router.post('/', protect, async (req, res) => {
             }
         }
 
+        // Calculate Shipping
+        const shippingCost = (user.governorate && user.governorate.trim().toLowerCase() === 'cairo') ? 100 : 150;
+        finalAmount += shippingCost;
+
         const order = new Order({
             user: user ? user._id : null, 
             guestInfo: user ? undefined : guestInfo,
@@ -149,7 +153,8 @@ router.post('/', protect, async (req, res) => {
                 return { package: item.package, quantity: item.quantity, price: item.price };
             }),
             totalAmount: Number(finalAmount.toFixed(2)),
-            couponApplied: couponAppliedData
+            couponApplied: couponAppliedData,
+            shippingCost: shippingCost
         });
 
         const createdOrder = await order.save();
@@ -215,6 +220,7 @@ router.post('/', protect, async (req, res) => {
             html: `
                 <h1>Thank you for your order!</h1>
                 <p>Order ID: ${createdOrder._id}</p>
+                <p>Shipping Cost: ${shippingCost.toFixed(2)} EGP</p>
                 <p><strong>Total Amount: ${finalAmount.toFixed(2)} EGP</strong></p>
                 ${couponAppliedData ? `<p>(Includes discount from coupon: ${couponAppliedData.code})</p>` : ''}
                 <h3>Items:</h3>
@@ -234,7 +240,8 @@ router.post('/', protect, async (req, res) => {
                 <h2>Order Details</h2>
                 <p><strong>Order ID:</strong> ${createdOrder._id}</p>
                 <p><strong>Subtotal:</strong> ${totalAmount.toFixed(2)} EGP</p>
-                <p><strong>Total (After Discount):</strong> ${finalAmount.toFixed(2)} EGP</p>
+                <p><strong>Shipping Cost:</strong> ${shippingCost.toFixed(2)} EGP</p>
+                <p><strong>Total (After Discount + Shipping):</strong> ${finalAmount.toFixed(2)} EGP</p>
                 <p><strong>Coupon Used:</strong> ${couponAppliedData ? couponAppliedData.code : 'None'}</p>
                 
                 <h2>Customer Details</h2>
